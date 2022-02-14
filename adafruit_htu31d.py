@@ -96,6 +96,9 @@ class HTU31D:
         self._conversion_command = _HTU31D_CONVERSION
         self._buffer = bytearray(6)
         self.reset()
+        #Time to wait before conversion is done
+        self.conversion_time    = 0.02
+        self.conversion_start   = 0.0
 
     @property
     def serial_number(self):
@@ -143,6 +146,49 @@ class HTU31D:
     def temperature(self):
         """The current temperature in degrees Celsius"""
         return self.measurements[0]
+
+    @property
+    def start_measurements(self):
+        """start `temperature` and `relative_humidity` measurements"""
+
+        self._buffer[0] = self._conversion_command
+        with self.i2c_device as i2c:
+            i2c.write(self._buffer, end=1)
+        self.conversion_start   = time.monotonic_ns()
+
+    @property
+    def get_measurements(self,crc_check=True):
+        if time.monotonic_ns() <= self.conversion_start+self.conversion_time:
+            #Return old value if conversion is not done
+            return (temperature, humidity)
+
+        temperature = None
+        humidity = None
+
+        self._buffer[0] = _HTU31D_READTEMPHUM
+        with self.i2c_device as i2c:
+            i2c.write_then_readinto(self._buffer, self._buffer, out_end=1)
+
+        # separate the read data
+        temperature, temp_crc, humidity, humidity_crc = struct.unpack_from(
+            ">HBHB", self._buffer
+        )
+
+        if crc_check:
+            # check CRC of bytes
+            if temp_crc != self._crc(temperature) or humidity_crc != self._crc(humidity):
+                raise RuntimeError("Invalid CRC calculated")
+
+        # decode data into human values:
+        # convert bytes into 16-bit signed integer
+        # convert the LSB value to a human value according to the datasheet
+        temperature = -40.0 + 165.0 * temperature / 65535.0
+
+        # repeat above steps for humidity data
+        humidity = 100 * humidity / 65535.0
+        humidity = max(min(humidity, 100), 0)
+
+        return (temperature, humidity)
 
     @property
     def measurements(self):
